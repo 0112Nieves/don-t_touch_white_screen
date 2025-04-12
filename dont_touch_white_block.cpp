@@ -13,9 +13,8 @@ using json = nlohmann::json;
 const int WIDTH = 400;
 const int HEIGHT = 700;
 const int GRID_W = 100;
-const float SPEED = 300.0f; // 每秒 pixel
 const float TARGET_Y = HEIGHT - 150;
-const float TOLERANCE = HEIGHT / SPEED * 1000.0f;
+const float TOLERANCE = HEIGHT / 300.0f * 1000.0f;
 
 struct Tile {
     int lane;
@@ -26,17 +25,8 @@ struct Tile {
     bool triggered;
 };
 
-vector<Tile> loadChart(const string& filename) {
+vector<Tile> loadChart(const json& chart, float speed) {
     vector<Tile> tiles;
-    ifstream file(filename);
-    if (!file.is_open()) {
-        cerr << "無法讀取譜面檔案\n";
-        return tiles;
-    }
-
-    json chart;
-    file >> chart;
-
     const float minTileDuration = 300.0f; // 每一小段 tile 的持續時間 (ms)
 
     for (auto& note : chart) {
@@ -50,7 +40,7 @@ vector<Tile> loadChart(const string& filename) {
             tile.time = startTime;
             tile.lane = lane;
             tile.duration = duration;
-            tile.y = -tile.duration / 1000.0f * SPEED;
+            tile.y = -tile.duration / 1000.0f * speed;
             tile.active = true;
             tile.triggered = false;
             tiles.push_back(tile);
@@ -62,7 +52,7 @@ vector<Tile> loadChart(const string& filename) {
                 tile.time = startTime + i * minTileDuration;
                 tile.lane = lane;
                 tile.duration = minTileDuration;
-                tile.y = -tile.duration / 1000.0f * SPEED;
+                tile.y = -tile.duration / 1000.0f * speed;
                 tile.active = true;
                 tile.triggered = false;
                 tiles.push_back(tile);
@@ -71,6 +61,15 @@ vector<Tile> loadChart(const string& filename) {
     }
 
     return tiles;
+}
+
+float calculateSpeedFromChart(const vector<Tile>& chart, float targetY) {
+    if (chart.empty()) return 300.0f; // fallback
+
+    float appearTime = chart[0].time;         // 第一顆 note 的時間（ms）
+    float travelTime = 2000.0f;               // 我希望它花 2 秒掉下來（你可以改這個值）
+    float speed = targetY / (travelTime / 1000.0f); // px/sec
+    return speed;
 }
 
 bool handleKeyPress(int lanePressed, vector<Tile>& tiles, float currentTime, int& score) {
@@ -122,7 +121,17 @@ int main() {
     }
 
     // 譜面資料
-    vector<Tile> chart = loadChart("canon.json");
+    ifstream file("canon.json");
+    json chartJson;
+    file >> chartJson;
+
+    // 計算 SPEED
+    float appearTime = chartJson[0]["time"];
+    float travelTime = 2000.0f; // 你希望 tile 要花幾毫秒下來（例如 2 秒）
+    float SPEED = TARGET_Y / (travelTime / 1000.0f);  // px/sec
+
+    // 用算出來的 SPEED 載入 chart
+    vector<Tile> chart = loadChart(chartJson, SPEED);
     vector<Tile> activeTiles;
 
     Clock globalClock;
