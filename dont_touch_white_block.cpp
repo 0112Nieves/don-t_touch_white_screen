@@ -37,20 +37,44 @@ vector<Tile> loadChart(const string& filename) {
     json chart;
     file >> chart;
 
+    const float minTileDuration = 300.0f; // 每一小段 tile 的持續時間 (ms)
+
     for (auto& note : chart) {
-        Tile tile;
-        tile.time = note["time"];
-        tile.lane = note["lane"];
-        tile.duration = note["duration"];
-        tile.active = true;
-        tile.triggered = false;
-        tile.y = -tile.duration / 1000.0f * SPEED;
-        tiles.push_back(tile);
+        float startTime = note["time"];
+        int lane = note["lane"];
+        float duration = note["duration"];
+
+        if (duration <= minTileDuration) {
+            // 普通短 tile，直接加入
+            Tile tile;
+            tile.time = startTime;
+            tile.lane = lane;
+            tile.duration = duration;
+            tile.y = -tile.duration / 1000.0f * SPEED;
+            tile.active = true;
+            tile.triggered = false;
+            tiles.push_back(tile);
+        } else {
+            // 長音：拆成多個 tile
+            int numPieces = ceil(duration / minTileDuration);
+            for (int i = 0; i < numPieces; ++i) {
+                Tile tile;
+                tile.time = startTime + i * minTileDuration;
+                tile.lane = lane;
+                tile.duration = minTileDuration;
+                tile.y = -tile.duration / 1000.0f * SPEED;
+                tile.active = true;
+                tile.triggered = false;
+                tiles.push_back(tile);
+            }
+        }
     }
+
     return tiles;
 }
 
 bool handleKeyPress(int lanePressed, vector<Tile>& tiles, float currentTime, int& score) {
+    printf("clicked\n");
     for (auto& tile : tiles) {
         if (!tile.active || tile.triggered || tile.lane != lanePressed)
             continue;
@@ -113,6 +137,9 @@ int main() {
     music.play();
     bool started = true;
 
+    map<Keyboard::Key, Clock> keyCooldown;
+    float cooldownMs = 120;
+
     while (window.isOpen()) {
         float currentTime = music.getPlayingOffset().asMilliseconds() + startOffset;
 
@@ -126,16 +153,21 @@ int main() {
             
             // 控制鍵（A/F/H/L）
             if (event.type == Event::KeyPressed && !gameOver) {
-                bool success = true;
-                if (event.key.code == Keyboard::A) success = handleKeyPress(0, activeTiles, currentTime, score);
-                if (event.key.code == Keyboard::F) success = handleKeyPress(1, activeTiles, currentTime, score);
-                if (event.key.code == Keyboard::H) success = handleKeyPress(2, activeTiles, currentTime, score);
-                if (event.key.code == Keyboard::L) success = handleKeyPress(3, activeTiles, currentTime, score);
+                // 取得這個鍵的 cooldown 時間
+                if (keyCooldown[event.key.code].getElapsedTime().asMilliseconds() > cooldownMs) {
+                    keyCooldown[event.key.code].restart(); // 重設 cooldown
             
-                if (!success) {
-                    cout << "Game Over!" << endl;
-                    gameOver = true;
-                    music.stop();
+                    bool success = true;
+                    if (event.key.code == Keyboard::A) success = handleKeyPress(0, activeTiles, currentTime, score);
+                    if (event.key.code == Keyboard::F) success = handleKeyPress(1, activeTiles, currentTime, score);
+                    if (event.key.code == Keyboard::H) success = handleKeyPress(2, activeTiles, currentTime, score);
+                    if (event.key.code == Keyboard::L) success = handleKeyPress(3, activeTiles, currentTime, score);
+            
+                    if (!success) {
+                        cout << "Game Over!" << endl;
+                        gameOver = true;
+                        music.stop();
+                    }
                 }
             }
         }
@@ -175,21 +207,32 @@ int main() {
         window.draw(line);
 
         // 畫 tile
+        float fixedTileHeight = 150;
         for (auto& tile : activeTiles) {
             if (!tile.active && !tile.triggered) continue;
-        
-            float height = tile.duration / 300.0f * SPEED;
-            tile.y -= height;
-            RectangleShape rect(Vector2f(GRID_W, height));
-            rect.setPosition(tile.lane * GRID_W, tile.y);
-        
-            if (tile.triggered) {
-                rect.setFillColor(Color(128, 128, 128)); // 灰色
-            } else {
-                rect.setFillColor(Color::Black);         // 尚未按的黑色
+
+            // 算出總高度
+            float totalHeight = tile.duration / 1000.0f * SPEED;
+            if (totalHeight < fixedTileHeight) totalHeight = fixedTileHeight;
+
+            // 算要畫幾個 tile（至少畫 1 個）
+            int numTiles = ceil(totalHeight / fixedTileHeight);
+
+            // 起始位置
+            float baseY = tile.y - totalHeight;
+
+            for (int i = 0; i < numTiles; ++i) {
+                RectangleShape rect(Vector2f(GRID_W, fixedTileHeight));
+                rect.setPosition(tile.lane * GRID_W, baseY + i * fixedTileHeight);
+
+                if (tile.triggered) {
+                    rect.setFillColor(Color(128, 128, 128)); // 灰色
+                } else {
+                    rect.setFillColor(Color::Black); // 尚未按的黑色
+                }
+
+                window.draw(rect);
             }
-        
-            window.draw(rect);
         }        
 
         window.display();
