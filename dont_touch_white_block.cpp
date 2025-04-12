@@ -54,24 +54,18 @@ bool handleKeyPress(int lanePressed, vector<Tile>& tiles, float currentTime, int
     for (auto& tile : tiles) {
         if (!tile.active || tile.triggered || tile.lane != lanePressed)
             continue;
-
         float diff = currentTime - tile.time;
-        cout << diff << endl;
 
         if (abs(diff) <= TOLERANCE) {
             tile.active = false;
             tile.triggered = true;
             score++;
-            printf("success\n");
             return true;  // 成功命中
         } else if (diff > TOLERANCE) {
             // 錯過的 tile 已經太久了，應該記 miss，不處理
             tile.active = false;
             tile.triggered = true;
             return false;  // miss（因為你按到太晚的 tile）
-        } else {
-            // 還沒到時間，可能按早了，但我們不當作錯
-            continue;
         }
     }
 
@@ -112,10 +106,15 @@ int main() {
     size_t chartIndex = 0;
     bool gameOver = false;
 
+    // 提前播放 offset，讓第一個 tile 出現在畫面中間
+    float startOffset = chart[0].time - (TARGET_Y / SPEED * 1000.0f);
+    if (startOffset < 0) startOffset = 0; // 防止小於 0
+    music.setPlayingOffset(milliseconds(static_cast<int>(startOffset)));
     music.play();
+    bool started = true;
 
     while (window.isOpen()) {
-        float currentTime = music.getPlayingOffset().asMilliseconds();
+        float currentTime = music.getPlayingOffset().asMilliseconds() + startOffset;
 
         Event event;
         // if (gameOver) {
@@ -133,11 +132,11 @@ int main() {
                 if (event.key.code == Keyboard::H) success = handleKeyPress(2, activeTiles, currentTime, score);
                 if (event.key.code == Keyboard::L) success = handleKeyPress(3, activeTiles, currentTime, score);
             
-                // if (!success) {
-                //     cout << "❌ 錯按，遊戲結束" << endl;
-                //     gameOver = true;
-                //     music.stop();
-                // }
+                if (!success) {
+                    cout << "Game Over!" << endl;
+                    gameOver = true;
+                    music.stop();
+                }
             }
         }
 
@@ -177,16 +176,21 @@ int main() {
 
         // 畫 tile
         for (auto& tile : activeTiles) {
-            if (!tile.active) continue;
-
-            // 根據 tile 的 duration 計算高度
+            if (!tile.active && !tile.triggered) continue;
+        
             float height = tile.duration / 300.0f * SPEED;
             tile.y -= height;
             RectangleShape rect(Vector2f(GRID_W, height));
             rect.setPosition(tile.lane * GRID_W, tile.y);
-            rect.setFillColor(Color::Black);
+        
+            if (tile.triggered) {
+                rect.setFillColor(Color(128, 128, 128)); // 灰色
+            } else {
+                rect.setFillColor(Color::Black);         // 尚未按的黑色
+            }
+        
             window.draw(rect);
-        }
+        }        
 
         window.display();
     }
