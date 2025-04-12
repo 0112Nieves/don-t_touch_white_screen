@@ -15,7 +15,7 @@ const int HEIGHT = 700;
 const int GRID_W = 100;
 const float SPEED = 300.0f; // 每秒 pixel
 const float TARGET_Y = HEIGHT - 150;
-const float TOLERANCE = 60.0f;
+const float TOLERANCE = HEIGHT / SPEED * 1000.0f;
 
 struct Tile {
     int lane;
@@ -50,28 +50,35 @@ vector<Tile> loadChart(const string& filename) {
     return tiles;
 }
 
-
 bool handleKeyPress(int lanePressed, vector<Tile>& tiles, float currentTime, int& score) {
     for (auto& tile : tiles) {
         if (!tile.active || tile.triggered || tile.lane != lanePressed)
             continue;
 
-        float elapsed = currentTime - tile.time;
-        float tileY = elapsed / 300.0f * SPEED;
+        float diff = currentTime - tile.time;
+        cout << diff << endl;
 
-        if (tileY < HEIGHT) {
+        if (abs(diff) <= TOLERANCE) {
             tile.active = false;
             tile.triggered = true;
             score++;
-            return true; // 成功擊中
+            printf("success\n");
+            return true;  // 成功命中
+        } else if (diff > TOLERANCE) {
+            // 錯過的 tile 已經太久了，應該記 miss，不處理
+            tile.active = false;
+            tile.triggered = true;
+            return false;  // miss（因為你按到太晚的 tile）
         } else {
-            return false; // 已經超過底部，也就是 miss
+            // 還沒到時間，可能按早了，但我們不當作錯
+            continue;
         }
     }
 
-    // 沒有任何可按的 tile，但不算錯（例如提早按）
+    // 沒有可按的 tile，也不當作 miss（提前按）
     return true;
 }
+
 
 int main() {
     RenderWindow window(VideoMode(WIDTH, HEIGHT), "別踩白塊兒");
