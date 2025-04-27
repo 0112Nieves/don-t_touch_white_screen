@@ -5,6 +5,7 @@
 #include <vector>
 #include <iostream>
 #include <cmath>
+#include "select_song.hpp"
 
 using namespace sf;
 using namespace std;
@@ -13,21 +14,21 @@ using json = nlohmann::json;
 const int WIDTH = 400;
 const int HEIGHT = 700;
 const int GRID_W = 100;
-const float TARGET_Y = HEIGHT - 150;
-const float TOLERANCE = HEIGHT / 300.0f * 1000.0f;
+const float TOLERANCE = HEIGHT / 300.0f * 1000.0f; // 容錯時間（ms）
 
 struct Tile {
     int lane;
-    float time;       // 開始時間（ms）
-    float duration;   // 持續時間（ms）
+    float time;
+    float duration;
     float y;
     bool active;
     bool triggered;
+    bool missed; // 新增，紀錄是否失誤（畫成紅色用）
 };
 
-vector<Tile> loadChart(const json& chart, float speed) {
+vector<Tile> loadChart(const json& chart) {
     vector<Tile> tiles;
-    const float minTileDuration = 300.0f; // 每一小段 tile 的持續時間 (ms)
+    const float minTileDuration = 300.0f;
 
     for (auto& note : chart) {
         float startTime = note["time"];
@@ -35,73 +36,42 @@ vector<Tile> loadChart(const json& chart, float speed) {
         float duration = note["duration"];
 
         if (duration <= minTileDuration) {
-            // 普通短 tile，直接加入
-            Tile tile;
-            tile.time = startTime;
-            tile.lane = lane;
-            tile.duration = duration;
-            tile.y = -tile.duration / 1000.0f * speed;
-            tile.active = true;
-            tile.triggered = false;
-            tiles.push_back(tile);
+            tiles.push_back({ lane, startTime, duration, 0.0f, true, false, false });
         } else {
-            // 長音：拆成多個 tile
-            int numPieces = ceil(duration / minTileDuration);
-            for (int i = 0; i < numPieces; ++i) {
-                Tile tile;
-                tile.time = startTime + i * minTileDuration;
-                tile.lane = lane;
-                tile.duration = minTileDuration;
-                tile.y = -tile.duration / 1000.0f * speed;
-                tile.active = true;
-                tile.triggered = false;
-                tiles.push_back(tile);
+            int pieces = ceil(duration / minTileDuration);
+            for (int i = 0; i < pieces; ++i) {
+                tiles.push_back({ lane, startTime + i * minTileDuration, minTileDuration, 0.0f, true, false, false });
+            }
+        }
+    }
+    return tiles;
+}
+
+bool handleKeyPress(int lanePressed, vector<Tile>& tiles, float currentTime, int& score, bool& madeMistake) {
+    for (auto& tile : tiles) {
+        if (!tile.active || tile.triggered)
+            continue;
+
+        if (tile.lane == lanePressed) {
+            float diff = currentTime - tile.time;
+            if (abs(diff) <= TOLERANCE) {
+                tile.active = false;
+                tile.triggered = true;
+                score++;
+                return true;
             }
         }
     }
 
-    return tiles;
+    // 如果找不到正確tile，代表按錯lane！
+    madeMistake = true;
+    return false;
 }
-
-float calculateSpeedFromChart(const vector<Tile>& chart, float targetY) {
-    if (chart.empty()) return 300.0f; // fallback
-
-    float appearTime = chart[0].time;         // 第一顆 note 的時間（ms）
-    float travelTime = 2000.0f;               // 我希望它花 2 秒掉下來（你可以改這個值）
-    float speed = targetY / (travelTime / 1000.0f); // px/sec
-    return speed;
-}
-
-bool handleKeyPress(int lanePressed, vector<Tile>& tiles, float currentTime, int& score) {
-    printf("clicked\n");
-    for (auto& tile : tiles) {
-        if (!tile.active || tile.triggered || tile.lane != lanePressed)
-            continue;
-        float diff = currentTime - tile.time;
-
-        if (abs(diff) <= TOLERANCE) {
-            tile.active = false;
-            tile.triggered = true;
-            score++;
-            return true;  // 成功命中
-        } else if (diff > TOLERANCE) {
-            // 錯過的 tile 已經太久了，應該記 miss，不處理
-            tile.active = false;
-            tile.triggered = true;
-            return false;  // miss（因為你按到太晚的 tile）
-        }
-    }
-
-    // 沒有可按的 tile，也不當作 miss（提前按）
-    return true;
-}
-
 
 int main() {
     RenderWindow window(VideoMode(WIDTH, HEIGHT), "別踩白塊兒");
     window.setFramerateLimit(60);
 
-    // 字型與分數文字
     Font font;
     if (!font.loadFromFile("Arial.ttf")) {
         cerr << "無法載入字型\n";
@@ -113,136 +83,135 @@ int main() {
     scoreText.setFillColor(Color::Black);
     scoreText.setPosition(WIDTH / 2 - 50, 10);
 
-    // 音樂
+    string songName = showSongSelection();
+    string musicPath = "ogg/" + songName + ".ogg";
+    string chartPath = "json/" + songName + ".json";
+
     Music music;
-    if (!music.openFromFile("canon.ogg")) {
+    if (!music.openFromFile(musicPath)) {
         cerr << "無法載入音樂\n";
         return -1;
     }
 
-    // 譜面資料
-    ifstream file("canon.json");
+    ifstream file(chartPath);
     json chartJson;
     file >> chartJson;
 
-    // 計算 SPEED
-    float appearTime = chartJson[0]["time"];
-    float travelTime = 2000.0f; // 你希望 tile 要花幾毫秒下來（例如 2 秒）
-    float SPEED = TARGET_Y / (travelTime / 1000.0f);  // px/sec
-
-    // 用算出來的 SPEED 載入 chart
-    vector<Tile> chart = loadChart(chartJson, SPEED);
+    vector<Tile> chart = loadChart(chartJson);
     vector<Tile> activeTiles;
 
     Clock globalClock;
     int score = 0;
     size_t chartIndex = 0;
     bool gameOver = false;
+    bool mistakeHappened = false;  // 有錯誤發生
+    Clock mistakeClock;            // 記錯誤時間
 
-    // 提前播放 offset，讓第一個 tile 出現在畫面中間
-    float startOffset = chart[0].time - (TARGET_Y / SPEED * 1000.0f);
-    if (startOffset < 0) startOffset = 0; // 防止小於 0
-    music.setPlayingOffset(milliseconds(static_cast<int>(startOffset)));
+    // 下落設定
+    float SPEED = 300.0f; 
+    float TARGET_Y = HEIGHT / 2.0f;
+    float travelTime = TARGET_Y / SPEED * 1000.0f;
+
+    float firstNoteTime = chart[0].time;
+    float musicOffset = firstNoteTime - travelTime;
+    if (musicOffset < 0) musicOffset = 0;
+
+    music.setPlayingOffset(milliseconds(static_cast<int>(musicOffset)));
     music.play();
-    bool started = true;
 
     map<Keyboard::Key, Clock> keyCooldown;
-    float cooldownMs = 120;
+    float cooldownMs = 160;
 
     while (window.isOpen()) {
-        float currentTime = music.getPlayingOffset().asMilliseconds() + startOffset;
+        float currentTime = music.getPlayingOffset().asMilliseconds() + musicOffset;
 
         Event event;
-        // if (gameOver) {
-        //     return 0;
-        // }
         while (window.pollEvent(event)) {
             if (event.type == Event::Closed)
                 window.close();
-            
-            // 控制鍵（A/F/H/L）
-            if (event.type == Event::KeyPressed && !gameOver) {
-                // 取得這個鍵的 cooldown 時間
+
+            if (event.type == Event::KeyPressed && !gameOver && !mistakeHappened) {
                 if (keyCooldown[event.key.code].getElapsedTime().asMilliseconds() > cooldownMs) {
-                    keyCooldown[event.key.code].restart(); // 重設 cooldown
-            
+                    keyCooldown[event.key.code].restart();
+
                     bool success = true;
-                    if (event.key.code == Keyboard::A) success = handleKeyPress(0, activeTiles, currentTime, score);
-                    if (event.key.code == Keyboard::F) success = handleKeyPress(1, activeTiles, currentTime, score);
-                    if (event.key.code == Keyboard::H) success = handleKeyPress(2, activeTiles, currentTime, score);
-                    if (event.key.code == Keyboard::L) success = handleKeyPress(3, activeTiles, currentTime, score);
-            
-                    if (!success) {
-                        cout << "Game Over!" << endl;
-                        gameOver = true;
-                        music.stop();
+                    bool madeMistake = false;
+                    if (event.key.code == Keyboard::A) success = handleKeyPress(0, activeTiles, currentTime, score, madeMistake);
+                    if (event.key.code == Keyboard::F) success = handleKeyPress(1, activeTiles, currentTime, score, madeMistake);
+                    if (event.key.code == Keyboard::H) success = handleKeyPress(2, activeTiles, currentTime, score, madeMistake);
+                    if (event.key.code == Keyboard::L) success = handleKeyPress(3, activeTiles, currentTime, score, madeMistake);
+
+                    if (madeMistake) {
+                        mistakeHappened = true;
+                        mistakeClock.restart();
+                        music.pause();
                     }
                 }
             }
         }
 
-        // 推進譜面到 activeTiles
-        while (chartIndex < chart.size() && chart[chartIndex].time <= currentTime + 1500) {
-            activeTiles.push_back(chart[chartIndex]);
-            chartIndex++;
-        }
+        if (!gameOver && !mistakeHappened) {
+            while (chartIndex < chart.size() && chart[chartIndex].time <= currentTime + 1500) {
+                activeTiles.push_back(chart[chartIndex]);
+                chartIndex++;
+            }
 
-        // 更新 tile Y
-        for (auto& tile : activeTiles) {
-            float elapsed = currentTime - tile.time;
-            tile.y = (elapsed / 1000.0f * SPEED);  // 計算當前的垂直位置
-        }
+            for (auto& tile : activeTiles) {
+                float elapsed = currentTime - tile.time;
+                tile.y = (elapsed / 1000.0f * SPEED) + TARGET_Y;
+            }
 
-        // 清理錯過的 tile
-        for (auto& tile : activeTiles) {
-            if (tile.y > HEIGHT && tile.active) {  // 如果 tile 超過了畫面底部
-                tile.active = false;  // 設置為不活躍
-                tile.triggered = true;  // 標記為已錯過
-                cout << "Missed tile at lane " << tile.lane << endl;
+            for (auto& tile : activeTiles) {
+                if (tile.y > HEIGHT && tile.active) {
+                    tile.active = false;
+                    tile.triggered = true;
+                    tile.missed = true; // 超出底部也算miss
+                    mistakeHappened = true;
+                    mistakeClock.restart();
+                    music.pause();
+                }
             }
         }
 
-        // 更新文字
+        if (mistakeHappened && mistakeClock.getElapsedTime().asSeconds() > 2.0f) {
+            gameOver = true;
+        }
+
         scoreText.setString("Score: " + to_string(score));
 
-        // 畫面更新
         window.clear(Color::White);
         window.draw(scoreText);
 
-        // 判定線
-        RectangleShape line(Vector2f(WIDTH, 2));
-        line.setPosition(0, HEIGHT);
-        line.setFillColor(Color(200, 0, 0));
-        window.draw(line);
+        // RectangleShape line(Vector2f(WIDTH, 2));
+        // line.setPosition(0, HEIGHT - 150);
+        // line.setFillColor(Color(200, 0, 0));
+        // window.draw(line);
 
-        // 畫 tile
         float fixedTileHeight = 150;
         for (auto& tile : activeTiles) {
             if (!tile.active && !tile.triggered) continue;
 
-            // 算出總高度
             float totalHeight = tile.duration / 1000.0f * SPEED;
             if (totalHeight < fixedTileHeight) totalHeight = fixedTileHeight;
 
-            // 算要畫幾個 tile（至少畫 1 個）
             int numTiles = ceil(totalHeight / fixedTileHeight);
-
-            // 起始位置
             float baseY = tile.y - totalHeight;
 
             for (int i = 0; i < numTiles; ++i) {
                 RectangleShape rect(Vector2f(GRID_W, fixedTileHeight));
                 rect.setPosition(tile.lane * GRID_W, baseY + i * fixedTileHeight);
 
-                if (tile.triggered) {
-                    rect.setFillColor(Color(128, 128, 128)); // 灰色
+                if (tile.missed) {
+                    rect.setFillColor(mistakeClock.getElapsedTime().asMilliseconds() / 200 % 2 == 0 ? Color::Red : Color::White); // 閃爍
+                } else if (tile.triggered) {
+                    rect.setFillColor(Color(128, 128, 128));
                 } else {
-                    rect.setFillColor(Color::Black); // 尚未按的黑色
+                    rect.setFillColor(Color::Black);
                 }
 
                 window.draw(rect);
             }
-        }        
+        }
 
         window.display();
     }
